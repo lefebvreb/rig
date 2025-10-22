@@ -1,6 +1,7 @@
 use crate::{
     OneOrMany,
     completion::{self, CompletionError, GetTokenUsage},
+    http_client::{self, HttpClientExt},
     json_utils,
     message::{self, Reasoning, ToolChoice},
     telemetry::SpanCombinator,
@@ -159,6 +160,7 @@ impl TryFrom<CompletionResponse> for completion::CompletionResponse<CompletionRe
                     completion::AssistantContent::Reasoning(Reasoning {
                         id: None,
                         reasoning: vec![thinking],
+                        signature: None,
                     })
                 }
             }))
@@ -457,6 +459,7 @@ impl TryFrom<Message> for message::Message {
                             message::AssistantContent::Reasoning(Reasoning {
                                 id: None,
                                 reasoning: vec![thinking],
+                                signature: None,
                             })
                         }
                     })
@@ -512,13 +515,16 @@ impl TryFrom<Message> for message::Message {
 }
 
 #[derive(Clone)]
-pub struct CompletionModel {
-    pub(crate) client: Client,
+pub struct CompletionModel<T = reqwest::Client> {
+    pub(crate) client: Client<T>,
     pub model: String,
 }
 
-impl CompletionModel {
-    pub fn new(client: Client, model: &str) -> Self {
+impl<T> CompletionModel<T>
+where
+    T: HttpClientExt,
+{
+    pub fn new(client: Client<T>, model: &str) -> Self {
         Self {
             client,
             model: model.to_string(),
@@ -573,7 +579,7 @@ impl CompletionModel {
     }
 }
 
-impl completion::CompletionModel for CompletionModel {
+impl completion::CompletionModel for CompletionModel<reqwest::Client> {
     type Response = CompletionResponse;
     type StreamingResponse = StreamingCompletionResponse;
 
@@ -608,10 +614,19 @@ impl completion::CompletionModel for CompletionModel {
         );
 
         async {
-            let response = self.client.post("/v2/chat").json(&request).send().await?;
+            let response = self
+                .client
+                .client()
+                .post("/v2/chat")
+                .json(&request)
+                .send()
+                .await
+                .map_err(|e| http_client::Error::Instance(e.into()))?;
 
             if response.status().is_success() {
-                let text_response = response.text().await?;
+                let text_response = response.text().await.map_err(|e| {
+                    CompletionError::HttpError(http_client::Error::Instance(e.into()))
+                })?;
                 tracing::debug!("Cohere completion request: {}", text_response);
 
                 let json_response: CompletionResponse = serde_json::from_str(&text_response)?;
@@ -624,7 +639,11 @@ impl completion::CompletionModel for CompletionModel {
                     json_response.try_into()?;
                 Ok(completion)
             } else {
-                Err(CompletionError::ProviderError(response.text().await?))
+                Err(CompletionError::ProviderError(
+                    response.text().await.map_err(|e| {
+                        CompletionError::HttpError(http_client::Error::Instance(e.into()))
+                    })?,
+                ))
             }
         }
         .instrument(llm_span)
