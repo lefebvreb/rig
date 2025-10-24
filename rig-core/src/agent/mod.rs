@@ -114,7 +114,7 @@ mod tool;
 pub use crate::message::Text;
 pub use builder::{AgentBuilder, AgentBuilderSimple};
 pub use completion::Agent;
-pub use prompt_request::PromptHook;
+pub use prompt_request::{PromptHook, StreamingPromptHook};
 pub use prompt_request::streaming::{
     FinalResponse, MultiTurnStreamItem, StreamingPromptRequest, stream_to_stdout,
 };
